@@ -2,6 +2,7 @@
   32x16 Dot Matrix Display DS1307RTC digital clock
   Compatible with the Arduino IDE 1.6.8
   By SM Ching (http://ediy.com.my)
+  Release Date: 22 July 2017
 */
 
 #define DEBUG //comment this line to disable Serial.print() & Serial.println()
@@ -61,11 +62,11 @@ byte brightness[BRIGHTNESS_COUNT] = {2, 5, 10, 30, 60, 90, 130, 255};
 
 // define some values used by menu
 #define SET_FONT 0
-#define SET_DATE 1
-#define SET_TIME 2
-#define SET_ALARM 3
-#define SET_ENABLE_DISABLE_ALARM 4
-#define SET_BRIGHTNESS 5
+#define SET_BRIGHTNESS 1
+#define SET_DATE 2
+#define SET_TIME 3
+#define SET_ALARM 4
+#define SET_ENABLE_DISABLE_ALARM 5
 
 #define MENU_COUNT 6
 String menu[MENU_COUNT] = {"1 MODE", "2 BRIGHT", "3 DATE  ", "4 TIME   ", "5 ALARM ", "6 EN ARM"};
@@ -83,7 +84,7 @@ void setup() {
   off_all_alarm(); //turn off all alarm
   load_alarmSettings();
   brightness_position = EEPROM.read(BRIGHTNESS_ADDRESS);
-  if (brightness_position > 4)  brightness_position = 0;
+  if (brightness_position > 7)  brightness_position = 0;
   DEBUG_PRINT("brightness = ");
   DEBUG_PRINTLN(brightness_position);
   dmd.setBrightness(brightness[brightness_position]);
@@ -104,14 +105,14 @@ void loop() {
     previous_ss = RTC_time.second;
     show_time(FIRST_LINE, RTC_time, FontMode); //show time on first line of DMD screen
     show_date(SECOND_LINE, RTC_date); //show time on second line of DMD screen
-    // show_alarmtime(); //show alarm time on right corner of DMD screen
-    DEBUG_PRINT(dateStr(RTC_date)); DEBUG_PRINT("  "); DEBUG_PRINTLN(timeStr(RTC_time));
+    //DEBUG_PRINT(dateStr(RTC_date)); DEBUG_PRINT("  "); DEBUG_PRINTLN(timeStr(RTC_time));
+    DEBUG_PRINTLN(str_info());
     checkAlarm(RTC_time, Alarm);  //check all alarms, trigger an alarm if necessary
     auto_off_alarm(10); //turn off alarm after 10 seconds
   }
 
   String input = serial_input();
-  if (input.length() > 0) save_settings(input);
+  if (input.length() > 0) process_serialData(input);
   byte this_key_press = key_press();   // read the buttons
   if (this_key_press == btnSELECT) show_menu();
 }
@@ -139,9 +140,6 @@ void show_time(byte pos_y, RTCTime time, int font_size) {
       dmd.selectFont(Arial14);
       String strTime = int2str(time.hour) + "." + int2str(time.minute);
       dmd.drawString(0, pos_y - offset, strTime);
-      //dmd.drawString(0, pos_y - offset, int2str(time.hour));
-      //dmd.drawString(16, pos_y - offset, ".");
-      //dmd.drawString(18, pos_y - offset, int2str(time.minute));
       break;
   }
 }
@@ -173,73 +171,127 @@ String serial_input() {
 }
 
 //////////////////////////////////////////////////////////////////////////
-// set date: save_settings(Dyymmdd) eg. save_settings(D160131)
-// set time: save_settings(Thhnnss) eg. save_settings(T203456)
-// set alarm: save_settings(Ahhnnssx) eg. save_settings(A2034560)
-// set brightness: save_settings(Bx), where x = 0 to 7. eg. save_settings(B1)
-// disable/enable alarm: save_settings(Exs), where x is alarmID, s is status (0 or 1), eg. save_settings(E01) 
+// get system info
 //////////////////////////////////////////////////////////////////////////
-void save_settings(String input) {
+String str_info() {
+  RTCDate date;
+  rtc.readDate(&date); //get date from real time IC
+  RTCTime time;
+  rtc.readTime(&time); //get time from real time IC
+  String strDate = int2str(date.year) + int2str(date.month) + int2str(date.day);
+  String strTime = int2str(time.hour) + int2str(time.minute) + int2str(time.second);
+  String strAlarmTime = "A" + int2str(Alarm[0].hour) + int2str(Alarm[0].minute) + int2str(Alarm[0].second);
+  String info = "M" + String(FontMode) +  ",B" + String(brightness_position) + ",D" + strDate + ",T" + strTime + ",A" + strAlarmTime + ",E" + Alarm[0].flags;
+  return info;
+}
+
+//////////////////////////////////////////////////////////////////////////
+// analyze serial data
+//////////////////////////////////////////////////////////////////////////
+void process_serialData(String input) {
   //convert to upper char, the value of cmd will be D or T or A
   char cmd = input[0] & ~(0x20);
-
-  if (cmd == 'B') { //set brightness
-    byte tem_brightness_position = input.substring(1, 2).toInt();
-    // checking for valid brightness
-    if (tem_brightness_position < 5) {
-      brightness_position = tem_brightness_position;
-      dmd.setBrightness(brightness[brightness_position]);
-      EEPROM.write(BRIGHTNESS_ADDRESS, brightness_position);
-      display_message("OK");
-    }
+  String parameter = input.substring(1); //from second character until end
+  switch (cmd) {
+    case 'G':
+      DEBUG_PRINTLN("STATUS," + str_info());
+      break;
+    case 'M':
+      save_displayMode(parameter);
+      break;
+    case 'B':
+      save_brightness(parameter);
+      break;
+    case 'D':
+      save_date(parameter);
+      break;
+    case 'T':
+      save_time(cmd, parameter);
+      break;
+    case 'A':
+      save_time(cmd, parameter);
+      break;
+    case 'E':
+      save_alarmEnable(parameter);
+      break;
   }
-  
-  if (cmd == 'D') { //set date
-    RTCDate new_date;
-    new_date.year = input.substring(1, 3).toInt(); //from 2nd character to 4th character
-    new_date.month = input.substring(3, 5).toInt(); //from 5th character to 6th character
-    new_date.day = input.substring(5, 7).toInt();
+}
 
-    // checking for valid date, save settings if a date is valid
-    if (check_date(new_date)) {
-      new_date.year = new_date.year + 2000;
-      rtc.writeDate(&new_date);
-      display_message("OK");
-    }
-    else {
-      display_message("ERROR");
-    }
-  }
+//////////////////////////////////////////////////////////////////////////
+// save_displayMode(x),where x = 0 to 2, eg. eg. save_displayMode("0").
+//////////////////////////////////////////////////////////////////////////
+void save_displayMode(String parameter) {
+  FontMode = parameter.substring(0, 1).toInt(); // first character only
+  display_message("OK");
+}
 
-  if (cmd == 'T' || cmd == 'A') { //set time or set alarm
-    //if (cmd == 'T') { //set time
-    // checking for valid time, save settings if a time is valid
-    RTCTime new_time;
-    new_time.hour = input.substring(1, 3).toInt();
-    new_time.minute = input.substring(3, 5).toInt();
-    new_time.second = input.substring(5, 7).toInt();
-    byte alarmID = input.substring(7).toInt(); //from  8th character to the end of string
-    if (check_time(new_time)) {
-      if (cmd == 'T') {
-        rtc.writeTime(&new_time);
-      } else {
-        RTCtime_to_alarmTime(alarmID, new_time);
-        alarm_write_eeprom(alarmID);
-      }
-      display_message("OK");
-    }
-    else {
-      display_message("ERROR");
-    }
-  }
-
-  if (cmd == 'E') { //disable or enable alarm
-    byte alarmID = input.substring(1, 2).toInt();
-    byte new_flag = input.substring(2).toInt(); 
-    Alarm[alarmID].flags = new_flag;
-    alarm_write_eeprom(alarmID);
+//////////////////////////////////////////////////////////////////////////
+// save_brightness(x), where x = 0 to 7. eg. save_brightness("1")
+//////////////////////////////////////////////////////////////////////////
+void save_brightness(String parameter) {
+  byte tem_brightness_position = parameter.substring(0, 1).toInt(); // first character only
+  // checking for valid brightness
+  if (tem_brightness_position < BRIGHTNESS_COUNT) {
+    brightness_position = tem_brightness_position;
+    dmd.setBrightness(brightness[brightness_position]);
+    EEPROM.write(BRIGHTNESS_ADDRESS, brightness_position);
     display_message("OK");
   }
+}
+
+//////////////////////////////////////////////////////////////////////////
+// save_date(yymmdd) eg. save_date("160131")
+//////////////////////////////////////////////////////////////////////////
+void save_date(String parameter) {
+  RTCDate new_date;
+  new_date.year = parameter.substring(0, 2).toInt(); //first 2 characters
+  new_date.month = parameter.substring(2, 4).toInt(); //from 3rd character to 4th character
+  new_date.day = parameter.substring(4, 6).toInt();  //from 5th character to 6th character
+
+  // checking for valid date, save settings if a date is valid
+  if (check_date(new_date)) {
+    new_date.year = new_date.year + 2000;
+    rtc.writeDate(&new_date);
+    display_message("OK");
+  }
+  else {
+    display_message("ERR");
+  }
+}
+
+//////////////////////////////////////////////////////////////////////////
+// save_time(hhnnss) eg. save_Time("203456")
+//////////////////////////////////////////////////////////////////////////
+void save_time(char cmd, String parameter) {
+  RTCTime new_time;
+  new_time.hour = parameter.substring(0, 2).toInt(); //first 2 characters
+  new_time.minute = parameter.substring(2, 4).toInt(); //from 3rd chacacter to 4th character
+  new_time.second = parameter.substring(4, 6).toInt(); //from 5th chacacter to 6th character
+  if (check_time(new_time)) {
+    if (cmd == 'T') {
+      rtc.writeTime(&new_time);
+    } else {
+      byte alarmID = parameter.substring(6).toInt(); //from 7th character to the end of string
+      RTCtime_to_alarmTime(alarmID, new_time);
+      alarm_write_eeprom(alarmID);
+    }
+    display_message("OK");
+  }
+  else {
+    display_message("ERR");
+  }
+}
+
+//////////////////////////////////////////////////////////////////////////
+// save_alarmEnable(xID), where x = status, ID=alarmID, eg. save_alarmEnable(10)
+//////////////////////////////////////////////////////////////////////////
+void save_alarmEnable(String parameter) {
+  byte new_flag = parameter.substring(0, 1).toInt(); //first character only
+  byte alarmID = parameter.substring(1).toInt(); //from 2nd chacter to the end of string
+
+  Alarm[alarmID].flags = new_flag;
+  alarm_write_eeprom(alarmID);
+  display_message("OK");
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -249,7 +301,7 @@ void display_message(String msg) {
   DEBUG_PRINTLN(msg);
   dmd.clearScreen();
   dmd.selectFont(SystemFont5x7);
-  dmd.drawString(8, FIRST_LINE, msg);
+  dmd.drawString(9, FIRST_LINE, msg);
   delay(2000);
   dmd.clearScreen();
 }
@@ -257,7 +309,7 @@ void display_message(String msg) {
 //////////////////////////////////////////////////////////////////////////
 // set display mode (set font)
 //////////////////////////////////////////////////////////////////////////
-void set_font() {
+void set_displayModet() {
   previousMillis = millis(); // reset timeout so that the timeout will not occur
   rtc.readTime(&RTC_time);
   int new_FontMode = FontMode;
@@ -311,7 +363,7 @@ void set_brightness() {
       new_brightness_position--;
       if (new_brightness_position < 0) new_brightness_position = BRIGHTNESS_COUNT - 1;
     } else if (this_key_press == btnSELECT) {
-      save_settings("B" + String(new_brightness_position));
+      save_brightness(String(new_brightness_position));
       break;
     }
 
@@ -320,7 +372,7 @@ void set_brightness() {
       preview_brighteness(new_brightness_position);
       //dmd.setBrightness(brightness[new_brightness_position]);
     }
-  } //while (true)
+  } //whileet(true)
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -344,8 +396,8 @@ void set_date() {
   }
 
   if (days != -1) {
-    String new_dateStr = "D" + int2str(years) + int2str(months) + int2str(days);
-    save_settings(new_dateStr);
+    String new_dateStr = int2str(years) + int2str(months) + int2str(days);
+    save_date(new_dateStr);
   }
 }
 
@@ -377,9 +429,9 @@ void set_time(char timeID) {
 
   String str_newTime = int2str(hours) + int2str(minutes) + int2str(seconds);
   if (timeID == 'T') { //if set system time
-    save_settings('T' + str_newTime); //eg. save_settings("T121314")
+    save_time('T',  str_newTime); //eg. save_time('T', "121314")
   } else {
-    save_settings('A' + str_newTime + timeID); //eg. save_settings("A1213140") for alarm0
+    save_time('A', str_newTime + timeID); //eg. save_time('A', "1213140") for alarm0
   }
 }
 
@@ -389,37 +441,46 @@ void set_time(char timeID) {
 void set_enable_disable_alarm() {
   byte alarmID = 0;
   byte new_flag = Alarm[alarmID].flags;
+  show_alarm_enable_disable(new_flag);
   previousMillis = millis(); // reset timeout so that the timeout will not occur
   while (true) { // loop forver
     if (isTimeout()) { //exit while if timeout occured
       dmd.clearScreen();
     }
     byte this_key_press = key_press();   // read the buttons
-    if ((this_key_press == btnUP) || (this_key_press == btnUP)) {
+    if ((this_key_press == btnUP) || (this_key_press == btnDOWN)) {
       previousMillis = millis();
-      if (new_flag == 1) { //The least significant bit will be 0 if the alarm is disabled or 1 if the alarm is enabled
-        DEBUG_PRINTLN("Disable alarm 0");
-        dmd.drawString(0, SECOND_LINE, "DISABLE");
-        new_flag = 0;
-      } else {
-        DEBUG_PRINTLN("Enable alarm 0");
-        dmd.drawString(0, SECOND_LINE, "ENABLE");
-        new_flag = 1;
-      }
+      new_flag = !new_flag; //toggle value
+      show_alarm_enable_disable(new_flag);
     } else if (this_key_press == btnSELECT) {
-      save_settings("E" + String(alarmID) + String(new_flag));
+      save_alarmEnable(String(new_flag) + String(alarmID) );
       break;
     }
   }
 }
 
 //////////////////////////////////////////////////////////////////////////
+// show enable/disable alarm status
+//////////////////////////////////////////////////////////////////////////
+void show_alarm_enable_disable(int new_flag) {
+  if (new_flag == 0) { //The least significant bit will be 0 if the alarm is disabled or 1 if the alarm is enabled
+    DEBUG_PRINTLN("Disable alarm 0");
+    dmd.drawString(0, SECOND_LINE, "DISABLE");
+    //new_flag = 0;
+  } else {
+    DEBUG_PRINTLN("Enable alarm 0");
+    dmd.drawString(0, SECOND_LINE, "ENABLE");
+    //new_flag = 1;
+  }
+}
+
+//////////////////////////////////////////////////////////////////////////
 // preview brightness
 //////////////////////////////////////////////////////////////////////////
-void preview_brighteness(byte new_brightness_position) {
+void preview_brighteness(byte this_brightness_position) {
   String str_brighness = "";
-  dmd.setBrightness(brightness[new_brightness_position]);
-  str_brighness = "VALUE: " + String(new_brightness_position + 1);
+  dmd.setBrightness(brightness[this_brightness_position]);
+  str_brighness = "VALUE: " + String(this_brightness_position + 1);
   dmd.drawString(0, SECOND_LINE, str_brighness);
 }
 

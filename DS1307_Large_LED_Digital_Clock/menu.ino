@@ -44,7 +44,7 @@ void run_selected(byte menu_item) {
   switch (menu_item) {
     case SET_FONT:
       DEBUG_PRINTLN("Set Font");
-      set_font();
+      set_displayModet();
       break;    
     case SET_BRIGHTNESS:
       DEBUG_PRINTLN("Set Brightness");
