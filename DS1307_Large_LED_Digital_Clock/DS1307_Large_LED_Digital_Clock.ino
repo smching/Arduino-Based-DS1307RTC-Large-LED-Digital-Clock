@@ -2,7 +2,7 @@
   32x16 Dot Matrix Display DS1307RTC digital clock
   Compatible with the Arduino IDE 1.6.8
   By SM Ching (http://ediy.com.my)
-  Release Date: 22 July 2017
+  Release Date: 5th Aug 2016
 */
 
 #define DEBUG //comment this line to disable Serial.print() & Serial.println()
@@ -10,10 +10,12 @@
 #define DEBUG_SERIAL_BEGIN(x) Serial.begin(x);
 #define DEBUG_PRINT(x)  Serial.print(x)
 #define DEBUG_PRINTLN(x)  Serial.println(x)
+#define DEBUG_SERIAL_FLUSH() Serial.flush()
 #else
 #define DEBUG_SERIAL_BEGIN(x)
 #define DEBUG_PRINT(x)
 #define DEBUG_PRINTLN(x)
+#define DEBUG_SERIAL_FLUSH()
 #endif
 
 #include "SPI.h" // Serial Peripheral Interface protocol used by DMD2
@@ -71,6 +73,8 @@ byte brightness[BRIGHTNESS_COUNT] = {2, 5, 10, 30, 60, 90, 130, 255};
 #define MENU_COUNT 6
 String menu[MENU_COUNT] = {"1 MODE", "2 BRIGHT", "3 DATE  ", "4 TIME   ", "5 ALARM ", "6 EN ARM"};
 
+int Message_hold = 2000; //hold message for 2 seconds
+
 //////////////////////////////////////////////////////////////////////////
 // the setup routine runs once when you press reset
 //////////////////////////////////////////////////////////////////////////
@@ -106,13 +110,17 @@ void loop() {
     show_time(FIRST_LINE, RTC_time, FontMode); //show time on first line of DMD screen
     show_date(SECOND_LINE, RTC_date); //show time on second line of DMD screen
     //DEBUG_PRINT(dateStr(RTC_date)); DEBUG_PRINT("  "); DEBUG_PRINTLN(timeStr(RTC_time));
-    DEBUG_PRINTLN(str_info());
+    DEBUG_PRINTLN(str_info(true));
     checkAlarm(RTC_time, Alarm);  //check all alarms, trigger an alarm if necessary
     auto_off_alarm(10); //turn off alarm after 10 seconds
   }
 
   String input = serial_input();
-  if (input.length() > 0) process_serialData(input);
+  if (input.length() > 0) {
+    Message_hold = 150;
+    process_serialData(input);
+    Message_hold = 2000;
+  }
   byte this_key_press = key_press();   // read the buttons
   if (this_key_press == btnSELECT) show_menu();
 }
@@ -126,7 +134,7 @@ void show_time(byte pos_y, RTCTime time, int font_size) {
       dmd.selectFont(SystemFont5x7);
       dmd.drawString(0, pos_y, int2str(time.hour));
       dmd.drawString(13, pos_y, int2str(time.minute));
-      dmd.selectFont(System3x5);
+       dmd.selectFont(System3x5);
       dmd.drawString(25, pos_y + 2, int2str(time.second));
       break;
     case FONT_3X5: //show date & time with same font size
@@ -173,15 +181,20 @@ String serial_input() {
 //////////////////////////////////////////////////////////////////////////
 // get system info
 //////////////////////////////////////////////////////////////////////////
-String str_info() {
+String str_info(boolean append_name) {
+  String info;
   RTCDate date;
   rtc.readDate(&date); //get date from real time IC
   RTCTime time;
   rtc.readTime(&time); //get time from real time IC
   String strDate = int2str(date.year) + int2str(date.month) + int2str(date.day);
   String strTime = int2str(time.hour) + int2str(time.minute) + int2str(time.second);
-  String strAlarmTime = "A" + int2str(Alarm[0].hour) + int2str(Alarm[0].minute) + int2str(Alarm[0].second);
-  String info = "M" + String(FontMode) +  ",B" + String(brightness_position) + ",D" + strDate + ",T" + strTime + ",A" + strAlarmTime + ",E" + Alarm[0].flags;
+  String strAlarmTime = int2str(Alarm[0].hour) + int2str(Alarm[0].minute) + int2str(Alarm[0].second);
+  if (append_name) {
+    info = "M" + String(FontMode) +  ",B" + String(brightness_position) + ",D" + strDate + ",T" + strTime + ",A" + strAlarmTime + ",E" + Alarm[0].flags;
+  } else {
+    info = String(FontMode) +  "," + String(brightness_position) + "," + strDate + "," + strTime + "," + strAlarmTime + "," + Alarm[0].flags;
+  }
   return info;
 }
 
@@ -194,7 +207,7 @@ void process_serialData(String input) {
   String parameter = input.substring(1); //from second character until end
   switch (cmd) {
     case 'G':
-      DEBUG_PRINTLN("STATUS," + str_info());
+      DEBUG_PRINTLN(str_info(false));
       break;
     case 'M':
       save_displayMode(parameter);
@@ -298,11 +311,12 @@ void save_alarmEnable(String parameter) {
 // display message on DMD
 //////////////////////////////////////////////////////////////////////////
 void display_message(String msg) {
+  //DEBUG_SERIAL_FLUSH();
   DEBUG_PRINTLN(msg);
   dmd.clearScreen();
   dmd.selectFont(SystemFont5x7);
   dmd.drawString(9, FIRST_LINE, msg);
-  delay(2000);
+  delay(Message_hold);
   dmd.clearScreen();
 }
 
